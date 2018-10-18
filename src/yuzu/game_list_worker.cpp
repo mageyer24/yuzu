@@ -20,6 +20,7 @@
 #include "core/file_sys/registered_cache.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
+#include "core/settings.h"
 #include "yuzu/compatibility_list.h"
 #include "yuzu/game_list.h"
 #include "yuzu/game_list_p.h"
@@ -58,6 +59,7 @@ QString FormatGameName(const std::string& physical_name) {
 
 QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
                                 Loader::AppLoader& loader, bool updatable = true) {
+    const auto& disabled = Settings::values[patch_manager.GetTitleID()].disabled_patches;
     QString out;
     FileSys::VirtualFile update_raw;
     loader.ReadUpdateRaw(update_raw);
@@ -65,8 +67,11 @@ QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
         if (!updatable && kv.first == "Update")
             continue;
 
+        const auto patch_disabled =
+            std::find(disabled.begin(), disabled.end(), kv.first) != disabled.end();
+
         if (kv.second.empty()) {
-            out.append(fmt::format("{}\n", kv.first).c_str());
+            out.append(fmt::format(patch_disabled ? "<s>{}</s><br>" : "{}<br>", kv.first).c_str());
         } else {
             auto ver = kv.second;
 
@@ -74,7 +79,9 @@ QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
             if (ver == "PACKED" && kv.first == "Update")
                 ver = Loader::GetFileTypeString(loader.GetFileType());
 
-            out.append(fmt::format("{} ({})\n", kv.first, ver).c_str());
+            out.append(
+                fmt::format(patch_disabled ? "<s>{} ({})</s><br>" : "{} ({})<br>", kv.first, ver)
+                    .c_str());
         }
     }
 
