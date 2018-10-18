@@ -178,8 +178,8 @@ void Config::ReadValues() {
     }
 
     // Renderer
-    Settings::values.use_accurate_framebuffers =
-        sdl2_config->GetBoolean("Renderer", "use_accurate_framebuffers", false);
+    Settings::values.use_accurate_gpu_emulation =
+        sdl2_config->GetBoolean("Renderer", "use_accurate_gpu_emulation", false);
 
     // Miscellaneous
     Settings::values.log_filter = sdl2_config->Get("Miscellaneous", "log_filter", "*:Trace");
