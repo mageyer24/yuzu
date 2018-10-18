@@ -71,6 +71,8 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "yuzu/compatibility_list.h"
 #include "yuzu/configuration/config.h"
 #include "yuzu/configuration/configure_dialog.h"
+#include "yuzu/configuration/configure_per_game_dialog.h"
+#include "yuzu/configuration/configure_per_general.h"
 #include "yuzu/debugger/console.h"
 #include "yuzu/debugger/graphics/graphics_breakpoints.h"
 #include "yuzu/debugger/graphics/graphics_surface.h"
@@ -400,6 +402,8 @@ void GMainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::CopyTIDRequested, this, &GMainWindow::OnGameListCopyTID);
     connect(game_list, &GameList::NavigateToGamedbEntryRequested, this,
             &GMainWindow::OnGameListNavigateToGamedbEntry);
+    connect(game_list, &GameList::OpenGamePropertiesDialogRequested, this,
+            &GMainWindow::OnGameListOpenProperties);
 
     connect(this, &GMainWindow::EmulationStarting, render_window,
             &GRenderWindow::OnEmulationStarting);
@@ -447,6 +451,7 @@ void GMainWindow::ConnectMenuEvents() {
     connect(ui.action_Fullscreen, &QAction::triggered, this, &GMainWindow::ToggleFullscreen);
 
     // Help
+    connect(ui.action_Open_yuzu_Folder, &QAction::triggered, this, &GMainWindow::OnOpenYuzuFolder);
     connect(ui.action_Rederive, &QAction::triggered, this,
             std::bind(&GMainWindow::OnReinitializeKeys, this, ReinitializeKeyBehavior::Warning));
     connect(ui.action_About, &QAction::triggered, this, &GMainWindow::OnAbout);
@@ -907,6 +912,27 @@ void GMainWindow::OnGameListNavigateToGamedbEntry(u64 program_id,
     QDesktopServices::openUrl(QUrl("https://yuzu-emu.org/game/" + directory));
 }
 
+void GMainWindow::OnGameListOpenProperties(FileSys::VirtualFile file) {
+
+    u64 title_id{};
+    if (Loader::GetLoader(file)->ReadProgramId(title_id) != Loader::ResultStatus::Success) {
+        QMessageBox::information(
+            this, tr("Per Game Configuration"),
+            tr("Per Game Configuration is not supported on games that do not have a title ID. "
+               "Please use a format that includes the title ID, such as NSP or XCI."));
+        return;
+    }
+
+    Settings::values.SetCurrentTitleID(title_id);
+    ConfigurePerGameDialog dialog{this, file, config->GetPerGameSettingsDelta(title_id)};
+    auto result = dialog.exec();
+    if (result == QDialog::Accepted) {
+        config->SetPerGameSettingsDelta(title_id, dialog.applyConfiguration());
+        config->Save();
+        game_list->PopulateAsync(UISettings::values.gamedir, UISettings::values.gamedir_deepscan);
+    }
+}
+
 void GMainWindow::OnMenuLoadFile() {
     const QString extensions =
         QString("*.").append(GameList::supported_file_extensions.join(" *.")).append(" main");
@@ -1263,6 +1289,7 @@ void GMainWindow::ToggleWindowMode() {
 }
 
 void GMainWindow::OnConfigure() {
+    Settings::values.SetCurrentTitleID(Settings::DEFAULT_PER_GAME);
     ConfigureDialog configureDialog(this, hotkey_registry);
     auto old_theme = UISettings::values.theme;
     const bool old_discord_presence = UISettings::values.enable_discord_presence;
@@ -1276,6 +1303,11 @@ void GMainWindow::OnConfigure() {
         game_list->PopulateAsync(UISettings::values.gamedir, UISettings::values.gamedir_deepscan);
         config->Save();
     }
+}
+
+void GMainWindow::OnOpenYuzuFolder() {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(
+        QString::fromStdString(FileUtil::GetUserPath(FileUtil::UserPath::UserDir))));
 }
 
 void GMainWindow::OnAbout() {
