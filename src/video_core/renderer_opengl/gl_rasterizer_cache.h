@@ -123,6 +123,7 @@ struct SurfaceParams {
         Texture1DArray,
         Texture2DArray,
         TextureCubemap,
+        TextureCubeArray,
     };
 
     static SurfaceTarget SurfaceTargetFromTextureType(Tegra::Texture::TextureType texture_type) {
@@ -140,6 +141,8 @@ struct SurfaceParams {
             return SurfaceTarget::Texture1DArray;
         case Tegra::Texture::TextureType::Texture2DArray:
             return SurfaceTarget::Texture2DArray;
+        case Tegra::Texture::TextureType::TextureCubeArray:
+            return SurfaceTarget::TextureCubeArray;
         default:
             LOG_CRITICAL(HW_GPU, "Unimplemented texture_type={}", static_cast<u32>(texture_type));
             UNREACHABLE();
@@ -161,6 +164,8 @@ struct SurfaceParams {
             return "Texture2DArray";
         case SurfaceTarget::TextureCubemap:
             return "TextureCubemap";
+        case SurfaceTarget::TextureCubeArray:
+            return "TextureCubeArray";
         default:
             LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", static_cast<u32>(target));
             UNREACHABLE();
@@ -177,6 +182,7 @@ struct SurfaceParams {
         case SurfaceTarget::Texture1DArray:
         case SurfaceTarget::Texture2DArray:
         case SurfaceTarget::TextureCubemap:
+        case SurfaceTarget::TextureCubeArray:
             return true;
         default:
             LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", static_cast<u32>(target));
