@@ -123,6 +123,7 @@ struct SurfaceParams {
         Texture1DArray,
         Texture2DArray,
         TextureCubemap,
+        TextureCubeArray,
     };
 
     static SurfaceTarget SurfaceTargetFromTextureType(Tegra::Texture::TextureType texture_type) {
@@ -140,6 +141,8 @@ struct SurfaceParams {
             return SurfaceTarget::Texture1DArray;
         case Tegra::Texture::TextureType::Texture2DArray:
             return SurfaceTarget::Texture2DArray;
+        case Tegra::Texture::TextureType::TextureCubeArray:
+            return SurfaceTarget::TextureCubeArray;
         default:
             LOG_CRITICAL(HW_GPU, "Unimplemented texture_type={}", static_cast<u32>(texture_type));
             UNREACHABLE();
@@ -161,10 +164,30 @@ struct SurfaceParams {
             return "Texture2DArray";
         case SurfaceTarget::TextureCubemap:
             return "TextureCubemap";
+        case SurfaceTarget::TextureCubeArray:
+            return "TextureCubeArray";
         default:
             LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", static_cast<u32>(target));
             UNREACHABLE();
             return fmt::format("TextureUnknown({})", static_cast<u32>(target));
+        }
+    }
+
+    static bool SurfaceTargetIsLayered(SurfaceTarget target) {
+        switch (target) {
+        case SurfaceTarget::Texture1D:
+        case SurfaceTarget::Texture2D:
+        case SurfaceTarget::Texture3D:
+            return false;
+        case SurfaceTarget::Texture1DArray:
+        case SurfaceTarget::Texture2DArray:
+        case SurfaceTarget::TextureCubemap:
+        case SurfaceTarget::TextureCubeArray:
+            return true;
+        default:
+            LOG_CRITICAL(HW_GPU, "Unimplemented surface_target={}", static_cast<u32>(target));
+            UNREACHABLE();
+            return false;
         }
     }
 
@@ -742,6 +765,25 @@ struct SurfaceParams {
         return size_in_bytes_gl / 6;
     }
 
+    /// Returns the exact size of memory occupied by the texture in VRAM, including mipmaps.
+    std::size_t MemorySize() const {
+        std::size_t size = InnerMemorySize(is_layered);
+        if (is_layered)
+            return size * depth;
+        return size;
+    }
+
+    /// Returns the exact size of the memory occupied by a layer in a texture in VRAM, including
+    /// mipmaps.
+    std::size_t LayerMemorySize() const {
+        return InnerMemorySize(true);
+    }
+
+    /// Returns the size of a layer of this surface in OpenGL.
+    std::size_t LayerSizeGL() const {
+        return SizeInBytesRaw(true) / depth;
+    }
+
     /// Creates SurfaceParams from a texture configuration
     static SurfaceParams CreateForTexture(const Tegra::Texture::FullTextureInfo& config,
                                           const GLShader::SamplerEntry& entry);
@@ -782,6 +824,7 @@ struct SurfaceParams {
     u32 unaligned_height;
     SurfaceTarget target;
     u32 max_mip_level;
+    bool is_layered;
 
     // Parameters used for caching
     VAddr addr;
@@ -797,6 +840,30 @@ struct SurfaceParams {
         u32 layer_stride;
         u32 base_layer;
     } rt;
+
+private:
+    std::size_t InnerMemorySize(bool layer_only = false) const {
+        const u32 compression_factor{GetCompressionFactor(pixel_format)};
+        const u32 bytes_per_pixel{GetBytesPerPixel(pixel_format)};
+        u32 m_depth = (layer_only ? 1U : depth);
+        u32 m_width = std::max(1U, width / compression_factor);
+        u32 m_height = std::max(1U, height / compression_factor);
+        std::size_t size = Tegra::Texture::CalculateSize(
+            is_tiled, bytes_per_pixel, m_width, m_height, m_depth, block_height, block_depth);
+        u32 m_block_height = block_height;
+        u32 m_block_depth = block_depth;
+        std::size_t block_size_bytes = 512 * block_height * block_depth; // 512 is GOB size
+        for (u32 i = 1; i < max_mip_level; i++) {
+            m_width = std::max(1U, m_width / 2);
+            m_height = std::max(1U, m_height / 2);
+            m_depth = std::max(1U, m_depth / 2);
+            m_block_height = std::max(1U, m_block_height / 2);
+            m_block_depth = std::max(1U, m_block_depth / 2);
+            size += Tegra::Texture::CalculateSize(is_tiled, bytes_per_pixel, m_width, m_height,
+                                                  m_depth, m_block_height, m_block_depth);
+        }
+        return is_tiled ? Common::AlignUp(size, block_size_bytes) : size;
+    }
 };
 
 }; // namespace OpenGL
