@@ -328,6 +328,27 @@ void RasterizerOpenGL::SetupShaders(GLenum primitive_mode) {
             // VertexB was combined with VertexA, so we skip the VertexB iteration
             index++;
         }
+
+        auto& maxwell3d{Core::System::GetInstance().GPU().Maxwell3D()};
+        auto& regions = maxwell3d.state.global_memory_uniforms;
+        size_t i = 0;
+        for (const auto& global_region : regions) {
+            const auto region = global_cache.GetGlobalRegion(
+                global_region, static_cast<Maxwell::ShaderStage>(stage));
+
+            const auto uniform_name = fmt::format("global_memory_region_declblock_{}", i);
+            const auto b_index = glGetProgramResourceIndex(shader->GetProgramHandle(primitive_mode),
+                                                           GL_UNIFORM_BLOCK, uniform_name.c_str());
+            if (b_index != GL_INVALID_INDEX) {
+                glBindBufferBase(GL_UNIFORM_BUFFER, current_constbuffer_bindpoint,
+                                 region->GetBufferHandle());
+                glUniformBlockBinding(shader->GetProgramHandle(primitive_mode), b_index,
+                                      current_constbuffer_bindpoint);
+                ++current_constbuffer_bindpoint;
+            }
+
+            ++i;
+        }
     }
 
     state.Apply();
@@ -648,6 +669,7 @@ void RasterizerOpenGL::InvalidateRegion(VAddr addr, u64 size) {
     MICROPROFILE_SCOPE(OpenGL_CacheManagement);
     res_cache.InvalidateRegion(addr, size);
     shader_cache.InvalidateRegion(addr, size);
+    global_cache.InvalidateRegion(addr, size);
     buffer_cache.InvalidateRegion(addr, size);
 }
 
