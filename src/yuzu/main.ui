@@ -57,8 +57,8 @@
       <string>Recent Files</string>
      </property>
     </widget>
-     <addaction name="action_Install_File_NAND" />
-     <addaction name="separator"/>
+    <addaction name="action_Install_File_NAND"/>
+    <addaction name="separator"/>
     <addaction name="action_Load_File"/>
     <addaction name="action_Load_Folder"/>
     <addaction name="separator"/>
@@ -102,6 +102,7 @@
      <string>&amp;Help</string>
     </property>
     <addaction name="action_Report_Compatibility"/>
+    <addaction name="action_Open_yuzu_Folder"/>
     <addaction name="separator"/>
      <addaction name="action_Rederive"/>
     <addaction name="action_About"/>
@@ -111,11 +112,11 @@
    <addaction name="menu_View"/>
    <addaction name="menu_Help"/>
   </widget>
-   <action name="action_Install_File_NAND">
-     <property name="text">
-       <string>Install File to NAND...</string>
-     </property>
-   </action>
+  <action name="action_Install_File_NAND">
+   <property name="text">
+    <string>Install File to NAND...</string>
+   </property>
+  </action>
   <action name="action_Load_File">
    <property name="text">
     <string>Load File...</string>
@@ -239,26 +240,31 @@
     <string>Fullscreen</string>
    </property>
   </action>
-   <action name="action_Restart">
-     <property name="enabled">
-       <bool>false</bool>
-     </property>
-     <property name="text">
-       <string>Restart</string>
-     </property>
-   </action>
-   <action name="action_Report_Compatibility">
-     <property name="enabled">
-       <bool>false</bool>
-     </property>
-     <property name="text">
-       <string>Report Compatibility</string>
-     </property>
-     <property name="visible">
-       <bool>false</bool>
-     </property>
-   </action>
-  </widget>
+  <action name="action_Restart">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Restart</string>
+   </property>
+  </action>
+  <action name="action_Report_Compatibility">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Report Compatibility</string>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
+   </property>
+  </action>
+  <action name="action_Open_yuzu_Folder">
+   <property name="text">
+    <string>Open yuzu Folder</string>
+   </property>
+  </action>
+ </widget>
  <resources/>
  <connections/>
 </ui>
