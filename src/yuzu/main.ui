@@ -57,8 +57,8 @@
       <string>Recent Files</string>
      </property>
     </widget>
-     <addaction name="action_Install_File_NAND" />
-     <addaction name="separator"/>
+    <addaction name="action_Install_File_NAND"/>
+    <addaction name="separator"/>
     <addaction name="action_Load_File"/>
     <addaction name="action_Load_Folder"/>
     <addaction name="separator"/>
@@ -67,6 +67,8 @@
     <addaction name="separator"/>
     <addaction name="action_Select_NAND_Directory"/>
     <addaction name="action_Select_SDMC_Directory"/>
+    <addaction name="separator"/>
+    <addaction name="action_Load_Amiibo"/>
     <addaction name="separator"/>
     <addaction name="action_Exit"/>
    </widget>
@@ -97,25 +99,34 @@
     <addaction name="action_Show_Status_Bar"/>
     <addaction name="menu_View_Debugging"/>
    </widget>
+   <widget class ="QMenu" name="menu_Tools">
+    <property name="title">
+     <string>Tools</string>
+    </property>
+    <addaction name="action_Rederive" />
+   </widget>
    <widget class="QMenu" name="menu_Help">
     <property name="title">
      <string>&amp;Help</string>
     </property>
     <addaction name="action_Report_Compatibility"/>
     <addaction name="separator"/>
-     <addaction name="action_Rederive"/>
     <addaction name="action_About"/>
    </widget>
    <addaction name="menu_File"/>
    <addaction name="menu_Emulation"/>
    <addaction name="menu_View"/>
+   <addaction name="menu_Tools" />
    <addaction name="menu_Help"/>
   </widget>
-   <action name="action_Install_File_NAND">
-     <property name="text">
-       <string>Install File to NAND...</string>
-     </property>
-   </action>
+  <action name="action_Install_File_NAND">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Install File to NAND...</string>
+   </property>
+  </action>
   <action name="action_Load_File">
    <property name="text">
     <string>Load File...</string>
@@ -247,6 +258,14 @@
        <string>Restart</string>
      </property>
    </action>
+  <action name="action_Load_Amiibo">
+    <property name="enabled">
+      <bool>false</bool>
+    </property>
+    <property name="text">
+      <string>Load Amiibo...</string>
+    </property>
+  </action>
    <action name="action_Report_Compatibility">
      <property name="enabled">
        <bool>false</bool>

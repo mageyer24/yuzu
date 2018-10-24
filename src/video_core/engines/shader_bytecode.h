@@ -214,7 +214,7 @@ enum class IMinMaxExchange : u64 {
     XHi = 3,
 };
 
-enum class VmadType : u64 {
+enum class VideoType : u64 {
     Size16_Low = 0,
     Size16_High = 1,
     Size32 = 2,
@@ -564,6 +564,10 @@ union Instruction {
     } fmul;
 
     union {
+        BitField<55, 1, u64> saturate;
+    } fmul32;
+
+    union {
         BitField<48, 1, u64> is_signed;
     } shift;
 
@@ -753,7 +757,6 @@ union Instruction {
         BitField<45, 2, PredOperation> op;
         BitField<47, 1, u64> ftz;
         BitField<48, 4, PredCondition> cond;
-        BitField<56, 1, u64> neg_b;
     } fsetp;
 
     union {
@@ -778,6 +781,14 @@ union Instruction {
         BitField<42, 1, u64> neg_pred39;
         BitField<45, 2, PredOperation> op;
     } psetp;
+
+    union {
+        BitField<43, 4, PredCondition> cond;
+        BitField<45, 2, PredOperation> op;
+        BitField<3, 3, u64> pred3;
+        BitField<0, 3, u64> pred0;
+        BitField<39, 3, u64> pred39;
+    } vsetp;
 
     union {
         BitField<12, 3, u64> pred12;
@@ -828,7 +839,6 @@ union Instruction {
         BitField<53, 1, u64> neg_b;
         BitField<54, 1, u64> abs_a;
         BitField<55, 1, u64> ftz;
-        BitField<56, 1, u64> neg_imm;
     } fset;
 
     union {
@@ -1152,15 +1162,17 @@ union Instruction {
     union {
         BitField<48, 1, u64> signed_a;
         BitField<38, 1, u64> is_byte_chunk_a;
-        BitField<36, 2, VmadType> type_a;
+        BitField<36, 2, VideoType> type_a;
         BitField<36, 2, u64> byte_height_a;
 
         BitField<49, 1, u64> signed_b;
         BitField<50, 1, u64> use_register_b;
         BitField<30, 1, u64> is_byte_chunk_b;
-        BitField<28, 2, VmadType> type_b;
+        BitField<28, 2, VideoType> type_b;
         BitField<28, 2, u64> byte_height_b;
+    } video;
 
+    union {
         BitField<51, 2, VmadShr> shr;
         BitField<55, 1, u64> saturate; // Saturates the result (a * b + c)
         BitField<47, 1, u64> cc;
@@ -1211,11 +1223,13 @@ public:
         KIL,
         SSY,
         SYNC,
+        BRK,
         DEPBAR,
         BFE_C,
         BFE_R,
         BFE_IMM,
         BRA,
+        PBK,
         LD_A,
         LD_C,
         ST_A,
@@ -1234,6 +1248,7 @@ public:
         OUT_R, // Emit vertex/primitive
         ISBERD,
         VMAD,
+        VSETP,
         FFMA_IMM, // Fused Multiply and Add
         FFMA_CR,
         FFMA_RC,
@@ -1372,7 +1387,7 @@ public:
     /// conditionally executed).
     static bool IsPredicatedInstruction(Id opcode) {
         // TODO(Subv): Add the rest of unpredicated instructions.
-        return opcode != Id::SSY;
+        return opcode != Id::SSY && opcode != Id::PBK;
     }
 
     class Matcher {
@@ -1468,9 +1483,11 @@ private:
 #define INST(bitstring, op, type, name) Detail::GetMatcher(bitstring, op, type, name)
             INST("111000110011----", Id::KIL, Type::Flow, "KIL"),
             INST("111000101001----", Id::SSY, Type::Flow, "SSY"),
+            INST("111000101010----", Id::PBK, Type::Flow, "PBK"),
             INST("111000100100----", Id::BRA, Type::Flow, "BRA"),
+            INST("1111000011111---", Id::SYNC, Type::Flow, "SYNC"),
+            INST("111000110100---", Id::BRK, Type::Flow, "BRK"),
             INST("1111000011110---", Id::DEPBAR, Type::Synch, "DEPBAR"),
-            INST("1111000011111---", Id::SYNC, Type::Synch, "SYNC"),
             INST("1110111111011---", Id::LD_A, Type::Memory, "LD_A"),
             INST("1110111110010---", Id::LD_C, Type::Memory, "LD_C"),
             INST("1110111111110---", Id::ST_A, Type::Memory, "ST_A"),
@@ -1489,6 +1506,7 @@ private:
             INST("1111101111100---", Id::OUT_R, Type::Trivial, "OUT_R"),
             INST("1110111111010---", Id::ISBERD, Type::Trivial, "ISBERD"),
             INST("01011111--------", Id::VMAD, Type::Trivial, "VMAD"),
+            INST("0101000011110---", Id::VSETP, Type::Trivial, "VSETP"),
             INST("0011001-1-------", Id::FFMA_IMM, Type::Ffma, "FFMA_IMM"),
             INST("010010011-------", Id::FFMA_CR, Type::Ffma, "FFMA_CR"),
             INST("010100011-------", Id::FFMA_RC, Type::Ffma, "FFMA_RC"),

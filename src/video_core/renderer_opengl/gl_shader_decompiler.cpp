@@ -163,10 +163,11 @@ private:
                     const ExitMethod jmp = Scan(target, end, labels);
                     return exit_method = ParallelExit(no_jmp, jmp);
                 }
-                case OpCode::Id::SSY: {
-                    // The SSY instruction uses a similar encoding as the BRA instruction.
+                case OpCode::Id::SSY:
+                case OpCode::Id::PBK: {
+                    // The SSY and PBK use a similar encoding as the BRA instruction.
                     ASSERT_MSG(instr.bra.constant_buffer == 0,
-                               "Constant buffer SSY is not supported");
+                               "Constant buffer branching is not supported");
                     const u32 target = offset + instr.bra.GetBranchTarget();
                     labels.insert(target);
                     // Continue scanning for an exit method.
@@ -378,8 +379,8 @@ public:
      * @param reg The destination register to use.
      * @param elem The element to use for the operation.
      * @param value The code representing the value to assign. Type has to be half float.
-     * @param type Half float kind of assignment.
-     * @param dest_num_components Number of components in the destionation.
+     * @param merge Half float kind of assignment.
+     * @param dest_num_components Number of components in the destination.
      * @param value_num_components Number of components in the value.
      * @param is_saturated Optional, when True, saturates the provided value.
      * @param dest_elem Optional, the destination element to use for the operation.
@@ -422,6 +423,7 @@ public:
      * @param reg The destination register to use.
      * @param elem The element to use for the operation.
      * @param attribute The input attribute to use as the source value.
+     * @param input_mode The input mode.
      * @param vertex The register that decides which vertex to read from (used in GS).
      */
     void SetRegisterToInputAttibute(const Register& reg, u64 elem, Attribute::Index attribute,
@@ -951,7 +953,7 @@ private:
         // Can't assign to the constant predicate.
         ASSERT(pred != static_cast<u64>(Pred::UnusedIndex));
 
-        const std::string variable = 'p' + std::to_string(pred) + '_' + suffix;
+        std::string variable = 'p' + std::to_string(pred) + '_' + suffix;
         shader.AddLine(variable + " = " + value + ';');
         declr_predicates.insert(std::move(variable));
     }
@@ -1058,7 +1060,7 @@ private:
     /*
      * Transforms the input string GLSL operand into an unpacked half float pair.
      * @note This function returns a float type pair instead of a half float pair. This is because
-     * real half floats are not standarized in GLSL but unpackHalf2x16 (which returns a vec2) is.
+     * real half floats are not standardized in GLSL but unpackHalf2x16 (which returns a vec2) is.
      * @param operand Input operand. It has to be an unsigned integer.
      * @param type How to unpack the unsigned integer to a half float pair.
      * @param abs Get the absolute value of unpacked half floats.
@@ -1232,27 +1234,27 @@ private:
     }
 
     /*
-     * Emits code to push the input target address to the SSY address stack, incrementing the stack
+     * Emits code to push the input target address to the flow address stack, incrementing the stack
      * top.
      */
-    void EmitPushToSSYStack(u32 target) {
+    void EmitPushToFlowStack(u32 target) {
         shader.AddLine('{');
         ++shader.scope;
-        shader.AddLine("ssy_stack[ssy_stack_top] = " + std::to_string(target) + "u;");
-        shader.AddLine("ssy_stack_top++;");
+        shader.AddLine("flow_stack[flow_stack_top] = " + std::to_string(target) + "u;");
+        shader.AddLine("flow_stack_top++;");
         --shader.scope;
         shader.AddLine('}');
     }
 
     /*
-     * Emits code to pop an address from the SSY address stack, setting the jump address to the
+     * Emits code to pop an address from the flow address stack, setting the jump address to the
      * popped address and decrementing the stack top.
      */
-    void EmitPopFromSSYStack() {
+    void EmitPopFromFlowStack() {
         shader.AddLine('{');
         ++shader.scope;
-        shader.AddLine("ssy_stack_top--;");
-        shader.AddLine("jmp_to = ssy_stack[ssy_stack_top];");
+        shader.AddLine("flow_stack_top--;");
+        shader.AddLine("jmp_to = flow_stack[flow_stack_top];");
         shader.AddLine("break;");
         --shader.scope;
         shader.AddLine('}');
@@ -1264,9 +1266,29 @@ private:
 
         ASSERT_MSG(header.ps.omap.sample_mask == 0, "Samplemask write is unimplemented");
 
+        shader.AddLine("if (alpha_test[0] != 0) {");
+        ++shader.scope;
+        // We start on the register containing the alpha value in the first RT.
+        u32 current_reg = 3;
+        for (u32 render_target = 0; render_target < Maxwell3D::Regs::NumRenderTargets;
+             ++render_target) {
+            // TODO(Blinkhawk): verify the behavior of alpha testing on hardware when
+            // multiple render targets are used.
+            if (header.ps.IsColorComponentOutputEnabled(render_target, 0) ||
+                header.ps.IsColorComponentOutputEnabled(render_target, 1) ||
+                header.ps.IsColorComponentOutputEnabled(render_target, 2) ||
+                header.ps.IsColorComponentOutputEnabled(render_target, 3)) {
+                shader.AddLine(fmt::format("if (!AlphaFunc({})) discard;",
+                                           regs.GetRegisterAsFloat(current_reg)));
+                current_reg += 4;
+            }
+        }
+        --shader.scope;
+        shader.AddLine('}');
+
         // Write the color outputs using the data in the shader registers, disabled
         // rendertargets/components are skipped in the register assignment.
-        u32 current_reg = 0;
+        current_reg = 0;
         for (u32 render_target = 0; render_target < Maxwell3D::Regs::NumRenderTargets;
              ++render_target) {
             // TODO(Subv): Figure out how dual-source blending is configured in the Switch.
@@ -1287,6 +1309,63 @@ private:
                 "gl_FragDepth = " +
                 regs.GetRegisterAsFloat(static_cast<Tegra::Shader::Register>(current_reg) + 1) +
                 ';');
+        }
+    }
+
+    /// Unpacks a video instruction operand (e.g. VMAD).
+    std::string GetVideoOperand(const std::string& op, bool is_chunk, bool is_signed,
+                                Tegra::Shader::VideoType type, u64 byte_height) {
+        const std::string value = [&]() {
+            if (!is_chunk) {
+                const auto offset = static_cast<u32>(byte_height * 8);
+                return "((" + op + " >> " + std::to_string(offset) + ") & 0xff)";
+            }
+            const std::string zero = "0";
+
+            switch (type) {
+            case Tegra::Shader::VideoType::Size16_Low:
+                return '(' + op + " & 0xffff)";
+            case Tegra::Shader::VideoType::Size16_High:
+                return '(' + op + " >> 16)";
+            case Tegra::Shader::VideoType::Size32:
+                // TODO(Rodrigo): From my hardware tests it becomes a bit "mad" when
+                // this type is used (1 * 1 + 0 == 0x5b800000). Until a better
+                // explanation is found: assert.
+                UNIMPLEMENTED();
+                return zero;
+            case Tegra::Shader::VideoType::Invalid:
+                UNREACHABLE_MSG("Invalid instruction encoding");
+                return zero;
+            default:
+                UNREACHABLE();
+                return zero;
+            }
+        }();
+
+        if (is_signed) {
+            return "int(" + value + ')';
+        }
+        return value;
+    };
+
+    /// Gets the A operand for a video instruction.
+    std::string GetVideoOperandA(Instruction instr) {
+        return GetVideoOperand(regs.GetRegisterAsInteger(instr.gpr8, 0, false),
+                               instr.video.is_byte_chunk_a != 0, instr.video.signed_a,
+                               instr.video.type_a, instr.video.byte_height_a);
+    }
+
+    /// Gets the B operand for a video instruction.
+    std::string GetVideoOperandB(Instruction instr) {
+        if (instr.video.use_register_b) {
+            return GetVideoOperand(regs.GetRegisterAsInteger(instr.gpr20, 0, false),
+                                   instr.video.is_byte_chunk_b != 0, instr.video.signed_b,
+                                   instr.video.type_b, instr.video.byte_height_b);
+        } else {
+            return '(' +
+                   std::to_string(instr.video.signed_b ? static_cast<s16>(instr.alu.GetImm20_16())
+                                                       : instr.alu.GetImm20_16()) +
+                   ')';
         }
     }
 
@@ -1459,9 +1538,10 @@ private:
                 break;
             }
             case OpCode::Id::FMUL32_IMM: {
-                regs.SetRegisterToFloat(
-                    instr.gpr0, 0,
-                    regs.GetRegisterAsFloat(instr.gpr8) + " * " + GetImmediate32(instr), 1, 1);
+                regs.SetRegisterToFloat(instr.gpr0, 0,
+                                        regs.GetRegisterAsFloat(instr.gpr8) + " * " +
+                                            GetImmediate32(instr),
+                                        1, 1, instr.fmul32.saturate);
                 break;
             }
             case OpCode::Id::FADD32I: {
@@ -2736,20 +2816,13 @@ private:
             break;
         }
         case OpCode::Type::FloatSetPredicate: {
-            std::string op_a = instr.fsetp.neg_a ? "-" : "";
-            op_a += regs.GetRegisterAsFloat(instr.gpr8);
+            const std::string op_a =
+                GetOperandAbsNeg(regs.GetRegisterAsFloat(instr.gpr8), instr.fsetp.abs_a != 0,
+                                 instr.fsetp.neg_a != 0);
 
-            if (instr.fsetp.abs_a) {
-                op_a = "abs(" + op_a + ')';
-            }
-
-            std::string op_b{};
+            std::string op_b;
 
             if (instr.is_b_imm) {
-                if (instr.fsetp.neg_b) {
-                    // Only the immediate version of fsetp has a neg_b bit.
-                    op_b += '-';
-                }
                 op_b += '(' + GetImmediate19(instr) + ')';
             } else {
                 if (instr.is_b_gpr) {
@@ -2945,33 +3018,24 @@ private:
             break;
         }
         case OpCode::Type::FloatSet: {
-            std::string op_a = instr.fset.neg_a ? "-" : "";
-            op_a += regs.GetRegisterAsFloat(instr.gpr8);
+            const std::string op_a = GetOperandAbsNeg(regs.GetRegisterAsFloat(instr.gpr8),
+                                                      instr.fset.abs_a != 0, instr.fset.neg_a != 0);
 
-            if (instr.fset.abs_a) {
-                op_a = "abs(" + op_a + ')';
-            }
-
-            std::string op_b = instr.fset.neg_b ? "-" : "";
+            std::string op_b;
 
             if (instr.is_b_imm) {
                 const std::string imm = GetImmediate19(instr);
-                if (instr.fset.neg_imm)
-                    op_b += "(-" + imm + ')';
-                else
-                    op_b += imm;
+                op_b = imm;
             } else {
                 if (instr.is_b_gpr) {
-                    op_b += regs.GetRegisterAsFloat(instr.gpr20);
+                    op_b = regs.GetRegisterAsFloat(instr.gpr20);
                 } else {
-                    op_b += regs.GetUniform(instr.cbuf34.index, instr.cbuf34.offset,
-                                            GLSLRegister::Type::Float);
+                    op_b = regs.GetUniform(instr.cbuf34.index, instr.cbuf34.offset,
+                                           GLSLRegister::Type::Float);
                 }
             }
 
-            if (instr.fset.abs_b) {
-                op_b = "abs(" + op_b + ')';
-            }
+            op_b = GetOperandAbsNeg(op_b, instr.fset.abs_b != 0, instr.fset.neg_b != 0);
 
             // The fset instruction sets a register to 1.0 or -1 (depending on the bf bit) if the
             // condition is true, and to 0 otherwise.
@@ -3279,16 +3343,32 @@ private:
                 // The SSY opcode tells the GPU where to re-converge divergent execution paths, it
                 // sets the target of the jump that the SYNC instruction will make. The SSY opcode
                 // has a similar structure to the BRA opcode.
-                ASSERT_MSG(instr.bra.constant_buffer == 0, "Constant buffer SSY is not supported");
+                ASSERT_MSG(instr.bra.constant_buffer == 0, "Constant buffer flow is not supported");
 
                 const u32 target = offset + instr.bra.GetBranchTarget();
-                EmitPushToSSYStack(target);
+                EmitPushToFlowStack(target);
+                break;
+            }
+            case OpCode::Id::PBK: {
+                // PBK pushes to a stack the address where BRK will jump to. This shares stack with
+                // SSY but using SYNC on a PBK address will kill the shader execution. We don't
+                // emulate this because it's very unlikely a driver will emit such invalid shader.
+                ASSERT_MSG(instr.bra.constant_buffer == 0, "Constant buffer PBK is not supported");
+
+                const u32 target = offset + instr.bra.GetBranchTarget();
+                EmitPushToFlowStack(target);
                 break;
             }
             case OpCode::Id::SYNC: {
                 // The SYNC opcode jumps to the address previously set by the SSY opcode
                 ASSERT(instr.flow.cond == Tegra::Shader::FlowCondition::Always);
-                EmitPopFromSSYStack();
+                EmitPopFromFlowStack();
+                break;
+            }
+            case OpCode::Id::BRK: {
+                // The BRK opcode jumps to the address previously set by the PBK opcode
+                ASSERT(instr.flow.cond == Tegra::Shader::FlowCondition::Always);
+                EmitPopFromFlowStack();
                 break;
             }
             case OpCode::Id::DEPBAR: {
@@ -3298,85 +3378,49 @@ private:
                 break;
             }
             case OpCode::Id::VMAD: {
-                const bool signed_a = instr.vmad.signed_a == 1;
-                const bool signed_b = instr.vmad.signed_b == 1;
-                const bool result_signed = signed_a || signed_b;
-                boost::optional<std::string> forced_result;
-
-                auto Unpack = [&](const std::string& op, bool is_chunk, bool is_signed,
-                                  Tegra::Shader::VmadType type, u64 byte_height) {
-                    const std::string value = [&]() {
-                        if (!is_chunk) {
-                            const auto offset = static_cast<u32>(byte_height * 8);
-                            return "((" + op + " >> " + std::to_string(offset) + ") & 0xff)";
-                        }
-                        const std::string zero = "0";
-
-                        switch (type) {
-                        case Tegra::Shader::VmadType::Size16_Low:
-                            return '(' + op + " & 0xffff)";
-                        case Tegra::Shader::VmadType::Size16_High:
-                            return '(' + op + " >> 16)";
-                        case Tegra::Shader::VmadType::Size32:
-                            // TODO(Rodrigo): From my hardware tests it becomes a bit "mad" when
-                            // this type is used (1 * 1 + 0 == 0x5b800000). Until a better
-                            // explanation is found: assert.
-                            UNREACHABLE_MSG("Unimplemented");
-                            return zero;
-                        case Tegra::Shader::VmadType::Invalid:
-                            // Note(Rodrigo): This flag is invalid according to nvdisasm. From my
-                            // testing (even though it's invalid) this makes the whole instruction
-                            // assign zero to target register.
-                            forced_result = boost::make_optional(zero);
-                            return zero;
-                        default:
-                            UNREACHABLE();
-                            return zero;
-                        }
-                    }();
-
-                    if (is_signed) {
-                        return "int(" + value + ')';
-                    }
-                    return value;
-                };
-
-                const std::string op_a = Unpack(regs.GetRegisterAsInteger(instr.gpr8, 0, false),
-                                                instr.vmad.is_byte_chunk_a != 0, signed_a,
-                                                instr.vmad.type_a, instr.vmad.byte_height_a);
-
-                std::string op_b;
-                if (instr.vmad.use_register_b) {
-                    op_b = Unpack(regs.GetRegisterAsInteger(instr.gpr20, 0, false),
-                                  instr.vmad.is_byte_chunk_b != 0, signed_b, instr.vmad.type_b,
-                                  instr.vmad.byte_height_b);
-                } else {
-                    op_b = '(' +
-                           std::to_string(signed_b ? static_cast<s16>(instr.alu.GetImm20_16())
-                                                   : instr.alu.GetImm20_16()) +
-                           ')';
-                }
-
+                const bool result_signed = instr.video.signed_a == 1 || instr.video.signed_b == 1;
+                const std::string op_a = GetVideoOperandA(instr);
+                const std::string op_b = GetVideoOperandB(instr);
                 const std::string op_c = regs.GetRegisterAsInteger(instr.gpr39, 0, result_signed);
 
-                std::string result;
-                if (forced_result) {
-                    result = *forced_result;
-                } else {
-                    result = '(' + op_a + " * " + op_b + " + " + op_c + ')';
+                std::string result = '(' + op_a + " * " + op_b + " + " + op_c + ')';
 
-                    switch (instr.vmad.shr) {
-                    case Tegra::Shader::VmadShr::Shr7:
-                        result = '(' + result + " >> 7)";
-                        break;
-                    case Tegra::Shader::VmadShr::Shr15:
-                        result = '(' + result + " >> 15)";
-                        break;
-                    }
+                switch (instr.vmad.shr) {
+                case Tegra::Shader::VmadShr::Shr7:
+                    result = '(' + result + " >> 7)";
+                    break;
+                case Tegra::Shader::VmadShr::Shr15:
+                    result = '(' + result + " >> 15)";
+                    break;
                 }
+
                 regs.SetRegisterToInteger(instr.gpr0, result_signed, 1, result, 1, 1,
                                           instr.vmad.saturate == 1, 0, Register::Size::Word,
                                           instr.vmad.cc);
+                break;
+            }
+            case OpCode::Id::VSETP: {
+                const std::string op_a = GetVideoOperandA(instr);
+                const std::string op_b = GetVideoOperandB(instr);
+
+                // We can't use the constant predicate as destination.
+                ASSERT(instr.vsetp.pred3 != static_cast<u64>(Pred::UnusedIndex));
+
+                const std::string second_pred = GetPredicateCondition(instr.vsetp.pred39, false);
+
+                const std::string combiner = GetPredicateCombiner(instr.vsetp.op);
+
+                const std::string predicate = GetPredicateComparison(instr.vsetp.cond, op_a, op_b);
+                // Set the primary predicate to the result of Predicate OP SecondPredicate
+                SetPredicate(instr.vsetp.pred3,
+                             '(' + predicate + ") " + combiner + " (" + second_pred + ')');
+
+                if (instr.vsetp.pred0 != static_cast<u64>(Pred::UnusedIndex)) {
+                    // Set the secondary predicate to the result of !Predicate OP SecondPredicate,
+                    // if enabled
+                    SetPredicate(instr.vsetp.pred0,
+                                 "!(" + predicate + ") " + combiner + " (" + second_pred + ')');
+                }
                 break;
             }
             default: {
@@ -3442,11 +3486,11 @@ private:
                 labels.insert(subroutine.begin);
                 shader.AddLine("uint jmp_to = " + std::to_string(subroutine.begin) + "u;");
 
-                // TODO(Subv): Figure out the actual depth of the SSY stack, for now it seems
-                // unlikely that shaders will use 20 nested SSYs.
-                constexpr u32 SSY_STACK_SIZE = 20;
-                shader.AddLine("uint ssy_stack[" + std::to_string(SSY_STACK_SIZE) + "];");
-                shader.AddLine("uint ssy_stack_top = 0u;");
+                // TODO(Subv): Figure out the actual depth of the flow stack, for now it seems
+                // unlikely that shaders will use 20 nested SSYs and PBKs.
+                constexpr u32 FLOW_STACK_SIZE = 20;
+                shader.AddLine("uint flow_stack[" + std::to_string(FLOW_STACK_SIZE) + "];");
+                shader.AddLine("uint flow_stack_top = 0u;");
 
                 shader.AddLine("while (true) {");
                 ++shader.scope;
@@ -3513,7 +3557,7 @@ private:
 
     // Declarations
     std::set<std::string> declr_predicates;
-}; // namespace Decompiler
+}; // namespace OpenGL::GLShader::Decompiler
 
 std::string GetCommonDeclarations() {
     return fmt::format("#define MAX_CONSTBUFFER_ELEMENTS {}\n",

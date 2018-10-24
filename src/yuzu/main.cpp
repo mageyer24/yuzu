@@ -60,6 +60,8 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "core/hle/kernel/process.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/filesystem/fsp_ldr.h"
+#include "core/hle/service/nfp/nfp.h"
+#include "core/hle/service/sm/sm.h"
 #include "core/loader/loader.h"
 #include "core/perf_stats.h"
 #include "core/settings.h"
@@ -99,6 +101,8 @@ __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
+
+constexpr u64 DLC_BASE_TITLE_ID_MASK = 0xFFFFFFFFFFFFE000;
 
 /**
  * "Callouts" are one-time instructional messages shown to the user. In the config settings, there
@@ -422,6 +426,7 @@ void GMainWindow::ConnectMenuEvents() {
     connect(ui.action_Select_SDMC_Directory, &QAction::triggered, this,
             [this] { OnMenuSelectEmulatedDirectory(EmulatedDirectoryTarget::SDMC); });
     connect(ui.action_Exit, &QAction::triggered, this, &QMainWindow::close);
+    connect(ui.action_Load_Amiibo, &QAction::triggered, this, &GMainWindow::OnLoadAmiibo);
 
     // Emulation
     connect(ui.action_Start, &QAction::triggered, this, &GMainWindow::OnStartGame);
@@ -690,6 +695,7 @@ void GMainWindow::ShutdownGame() {
     ui.action_Stop->setEnabled(false);
     ui.action_Restart->setEnabled(false);
     ui.action_Report_Compatibility->setEnabled(false);
+    ui.action_Load_Amiibo->setEnabled(false);
     render_window->hide();
     game_list->show();
     game_list->setFilterFocus();
@@ -823,14 +829,10 @@ static bool RomFSRawCopy(QProgressDialog& dialog, const FileSys::VirtualDir& src
 }
 
 void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_path) {
-    const auto path = fmt::format("{}{:016X}/romfs",
-                                  FileUtil::GetUserPath(FileUtil::UserPath::DumpDir), program_id);
-
-    const auto failed = [this, &path] {
+    const auto failed = [this] {
         QMessageBox::warning(this, tr("RomFS Extraction Failed!"),
                              tr("There was an error copying the RomFS files or the user "
                                 "cancelled the operation."));
-        vfs->DeleteDirectory(path);
     };
 
     const auto loader = Loader::GetLoader(vfs->OpenFile(game_path, FileSys::Mode::Read));
@@ -845,10 +847,24 @@ void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pa
         return;
     }
 
-    const auto romfs =
-        loader->IsRomFSUpdatable()
-            ? FileSys::PatchManager(program_id).PatchRomFS(file, loader->ReadRomFSIVFCOffset())
-            : file;
+    const auto installed = Service::FileSystem::GetUnionContents();
+    auto romfs_title_id = SelectRomFSDumpTarget(*installed, program_id);
+
+    if (!romfs_title_id) {
+        failed();
+        return;
+    }
+
+    const auto path = fmt::format(
+        "{}{:016X}/romfs", FileUtil::GetUserPath(FileUtil::UserPath::DumpDir), *romfs_title_id);
+
+    FileSys::VirtualFile romfs;
+
+    if (*romfs_title_id == program_id) {
+        romfs = file;
+    } else {
+        romfs = installed->GetEntry(*romfs_title_id, FileSys::ContentRecordType::Data)->GetRomFS();
+    }
 
     const auto extracted = FileSys::ExtractRomFS(romfs, FileSys::RomFSExtractionType::Full);
     if (extracted == nullptr) {
@@ -860,6 +876,7 @@ void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pa
 
     if (out == nullptr) {
         failed();
+        vfs->DeleteDirectory(path);
         return;
     }
 
@@ -870,8 +887,11 @@ void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pa
            "files into the new directory while <br>skeleton will only create the directory "
            "structure."),
         {"Full", "Skeleton"}, 0, false, &ok);
-    if (!ok)
+    if (!ok) {
         failed();
+        vfs->DeleteDirectory(path);
+        return;
+    }
 
     const auto full = res == "Full";
     const auto entry_size = CalculateRomFSEntrySize(extracted, full);
@@ -888,6 +908,7 @@ void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pa
     } else {
         progress.close();
         failed();
+        vfs->DeleteDirectory(path);
     }
 }
 
@@ -1174,6 +1195,7 @@ void GMainWindow::OnStartGame() {
     ui.action_Report_Compatibility->setEnabled(true);
 
     discord_rpc->Update();
+    ui.action_Load_Amiibo->setEnabled(true);
 }
 
 void GMainWindow::OnPauseGame() {
@@ -1278,6 +1300,27 @@ void GMainWindow::OnConfigure() {
     }
 }
 
+void GMainWindow::OnLoadAmiibo() {
+    const QString extensions{"*.bin"};
+    const QString file_filter = tr("Amiibo File (%1);; All Files (*.*)").arg(extensions);
+    const QString filename = QFileDialog::getOpenFileName(this, tr("Load Amiibo"), "", file_filter);
+    if (!filename.isEmpty()) {
+        Core::System& system{Core::System::GetInstance()};
+        Service::SM::ServiceManager& sm = system.ServiceManager();
+        auto nfc = sm.GetService<Service::NFP::Module::Interface>("nfp:user");
+        if (nfc != nullptr) {
+            auto nfc_file = FileUtil::IOFile(filename.toStdString(), "rb");
+            if (!nfc_file.IsOpen()) {
+                return;
+            }
+            std::vector<u8> amiibo_buffer(nfc_file.GetSize());
+            nfc_file.ReadBytes(amiibo_buffer.data(), amiibo_buffer.size());
+            nfc_file.Close();
+            nfc->LoadAmiibo(amiibo_buffer);
+        }
+    }
+}
+
 void GMainWindow::OnAbout() {
     AboutDialog aboutDialog(this);
     aboutDialog.exec();
@@ -1318,15 +1361,17 @@ void GMainWindow::UpdateStatusBar() {
 void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string details) {
     QMessageBox::StandardButton answer;
     QString status_message;
-    const QString common_message = tr(
-        "The game you are trying to load requires additional files from your Switch to be dumped "
-        "before playing.<br/><br/>For more information on dumping these files, please see the "
-        "following wiki page: <a "
-        "href='https://yuzu-emu.org/wiki/"
-        "dumping-system-archives-and-the-shared-fonts-from-a-switch-console/'>Dumping System "
-        "Archives and the Shared Fonts from a Switch Console</a>.<br/><br/>Would you like to quit "
-        "back to the game list? Continuing emulation may result in crashes, corrupted save "
-        "data, or other bugs.");
+    const QString common_message =
+        tr("The game you are trying to load requires additional files from your Switch to be "
+           "dumped "
+           "before playing.<br/><br/>For more information on dumping these files, please see the "
+           "following wiki page: <a "
+           "href='https://yuzu-emu.org/wiki/"
+           "dumping-system-archives-and-the-shared-fonts-from-a-switch-console/'>Dumping System "
+           "Archives and the Shared Fonts from a Switch Console</a>.<br/><br/>Would you like to "
+           "quit "
+           "back to the game list? Continuing emulation may result in crashes, corrupted save "
+           "data, or other bugs.");
     switch (result) {
     case Core::System::ResultStatus::ErrorSystemFiles: {
         QString message = "yuzu was unable to locate a Switch system archive";
@@ -1357,9 +1402,12 @@ void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string det
             this, tr("Fatal Error"),
             tr("yuzu has encountered a fatal error, please see the log for more details. "
                "For more information on accessing the log, please see the following page: "
-               "<a href='https://community.citra-emu.org/t/how-to-upload-the-log-file/296'>How to "
-               "Upload the Log File</a>.<br/><br/>Would you like to quit back to the game list? "
-               "Continuing emulation may result in crashes, corrupted save data, or other bugs."),
+               "<a href='https://community.citra-emu.org/t/how-to-upload-the-log-file/296'>How "
+               "to "
+               "Upload the Log File</a>.<br/><br/>Would you like to quit back to the game "
+               "list? "
+               "Continuing emulation may result in crashes, corrupted save data, or other "
+               "bugs."),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         status_message = "Fatal Error encountered";
         break;
@@ -1457,6 +1505,42 @@ void GMainWindow::OnReinitializeKeys(ReinitializeKeyBehavior behavior) {
     if (behavior == ReinitializeKeyBehavior::Warning) {
         game_list->PopulateAsync(UISettings::values.gamedir, UISettings::values.gamedir_deepscan);
     }
+}
+
+boost::optional<u64> GMainWindow::SelectRomFSDumpTarget(
+    const FileSys::RegisteredCacheUnion& installed, u64 program_id) {
+    const auto dlc_entries =
+        installed.ListEntriesFilter(FileSys::TitleType::AOC, FileSys::ContentRecordType::Data);
+    std::vector<FileSys::RegisteredCacheEntry> dlc_match;
+    dlc_match.reserve(dlc_entries.size());
+    std::copy_if(dlc_entries.begin(), dlc_entries.end(), std::back_inserter(dlc_match),
+                 [&program_id, &installed](const FileSys::RegisteredCacheEntry& entry) {
+                     return (entry.title_id & DLC_BASE_TITLE_ID_MASK) == program_id &&
+                            installed.GetEntry(entry)->GetStatus() == Loader::ResultStatus::Success;
+                 });
+
+    std::vector<u64> romfs_tids;
+    romfs_tids.push_back(program_id);
+    for (const auto& entry : dlc_match)
+        romfs_tids.push_back(entry.title_id);
+
+    if (romfs_tids.size() > 1) {
+        QStringList list{"Base"};
+        for (std::size_t i = 1; i < romfs_tids.size(); ++i)
+            list.push_back(QStringLiteral("DLC %1").arg(romfs_tids[i] & 0x7FF));
+
+        bool ok;
+        const auto res = QInputDialog::getItem(
+            this, tr("Select RomFS Dump Target"),
+            tr("Please select which RomFS you would like to dump."), list, 0, false, &ok);
+        if (!ok) {
+            return boost::none;
+        }
+
+        return romfs_tids[list.indexOf(res)];
+    }
+
+    return program_id;
 }
 
 bool GMainWindow::ConfirmClose() {

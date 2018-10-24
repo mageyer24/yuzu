@@ -82,10 +82,10 @@ set(UIS
 )
 
 file(GLOB COMPAT_LIST
-     ${CMAKE_BINARY_DIR}/dist/compatibility_list/compatibility_list.qrc
-     ${CMAKE_BINARY_DIR}/dist/compatibility_list/compatibility_list.json)
-file(GLOB_RECURSE ICONS ${CMAKE_SOURCE_DIR}/dist/icons/*)
-file(GLOB_RECURSE THEMES ${CMAKE_SOURCE_DIR}/dist/qt_themes/*)
+     ${PROJECT_BINARY_DIR}/dist/compatibility_list/compatibility_list.qrc
+     ${PROJECT_BINARY_DIR}/dist/compatibility_list/compatibility_list.json)
+file(GLOB_RECURSE ICONS ${PROJECT_SOURCE_DIR}/dist/icons/*)
+file(GLOB_RECURSE THEMES ${PROJECT_SOURCE_DIR}/dist/qt_themes/*)
 
 qt5_wrap_ui(UI_HDRS ${UIS})
 
@@ -121,7 +121,7 @@ target_link_libraries(yuzu PRIVATE Boost::boost glad Qt5::OpenGL Qt5::Widgets)
 target_link_libraries(yuzu PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
 
 if (YUZU_ENABLE_COMPATIBILITY_REPORTING)
-    add_definitions(-DYUZU_ENABLE_COMPATIBILITY_REPORTING)
+    target_compile_definitions(yuzu PRIVATE -DYUZU_ENABLE_COMPATIBILITY_REPORTING)
 endif()
 
 if (USE_DISCORD_PRESENCE)
